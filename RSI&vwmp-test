@@ -1,0 +1,260 @@
+//@version=4
+strategy("RSI-VWAP STRATEGY", overlay=false, initial_capital = 1000, currency = "USD", 
+   pyramiding = 10, default_qty_type = strategy.cash, default_qty_value = 1000, commission_value = 0.04)
+
+// ================================================================================================================================================================================
+// VARIABLES
+// ================================================================================================================================================================================
+
+var bool long = na, var bool short = na
+var bool longCondition = na, var bool shortCondition = na 
+var bool Xlong = na, var bool Xshort = na,
+var int CondIni_long = 0, var int CondIni_short = 0
+var bool XlongCondition = na, var bool XshortCondition = na
+var float last_open_longCondition = na, var float last_open_shortCondition = na
+var int last_longCondition = 0, var int last_shortCondition = 0
+var bool in_longCondition = na, var bool in_shortCondition = na
+var int last_long_sl = na, var int last_short_sl = na
+var bool CondIni_long_sl = 0, var bool CondIni_short_sl = 0
+var int nLongs = na, var int nShorts = na, var int pyr = na
+var float sum_long = 0.0, var float sum_short = 0.0
+var float Position_Price = 0.0, Position_Price := nz(Position_Price[1])
+var bool Final_Long_sl = na, var bool Final_Short_sl = na, var bool Act_sl = na, var float sl = na
+var int last_long_tp = na, var int last_short_tp = na
+var bool CondIni_long_tp = 0, var bool CondIni_short_tp = 0
+var float Quantity = na, var float Increase = na
+var float sum_qty_l = na, var float sum_qty_s = na
+
+// ================================================================================================================================================================================
+// RSI VWAP INDICATOR
+// ================================================================================================================================================================================
+
+// Initial inputs
+RSI_VWAP_length = input(17, "RSI-VWAP LENGTH", minval = 1, maxval = 99)
+RSI_VWAP_overSold = input(19, "OVERSOLD (LONG)", type=input.float, minval = 1, maxval = 99)
+RSI_VWAP_overBought = input(70, "OVERBOUGHT (XLONG)", type=input.float, minval = 1, maxval = 99)
+RSI_VWAP_overSold2 = input(33, "OVERSOLD 2 (LONG)", type=input.float, minval = 1, maxval = 99)
+
+
+
+// RSI with VWAP as source
+RSI_VWAP = rsi(vwap(close), RSI_VWAP_length)
+plot(RSI_VWAP)
+rsiUpperBand = hline(70, "RSI Upper Band", color=#787B86)
+hline(50, "RSI Middle Band", color=color.new(#787B86, 50))
+rsiLowerBand = hline(30, "RSI Lower Band", color=#787B86)
+
+
+
+
+Short_only = false
+RSI_VWAP_length_short = 17
+RSI_VWAP_overSold_short = 19
+RSI_VWAP_overBought_short = 80
+RSI_VWAP_overBought_short2 = 59
+RSI_VWAP_short = rsi(vwap(close), RSI_VWAP_length_short)
+
+// ================================================================================================================================================================================
+// STRATEGY
+// ================================================================================================================================================================================
+
+// Long/Short conditions, next entry always at better price
+long := (((crossover(RSI_VWAP, RSI_VWAP_overSold2)) and nz(CondIni_long[1]) == -1) or (crossover(RSI_VWAP, RSI_VWAP_overSold))) and (nz(nLongs[1]) < pyr)
+longCondition := in_longCondition and nLongs > 0 ? long and (close < fixnan(Position_Price[1])) : long
+short := (((crossunder(RSI_VWAP_short, RSI_VWAP_overBought_short2)) and nz(CondIni_short[1]) == -1) or (crossunder(RSI_VWAP_short, RSI_VWAP_overBought_short))) and (nz(nShorts[1]) < pyr) and Short_only   
+shortCondition := in_shortCondition and nShorts > 0 ? short and (close > fixnan(Position_Price[1])) : short
+   
+// Xlong/Xshort Conditions, closing with profit only?
+Xlong := (crossunder(RSI_VWAP, RSI_VWAP_overBought)) and not Short_only
+Xshort := (crossover(RSI_VWAP_short, RSI_VWAP_overSold_short)) and Short_only and false
+CondIni_long := longCondition ? 1 : Xlong or shortCondition ? -1 : nz(CondIni_long[1])
+CondIni_short := shortCondition ? 1 : Xshort or longCondition ? -1 : nz(CondIni_short[1])
+XlongCondition := Xlong and nz(CondIni_long[1]) == 1
+XshortCondition := Xshort and nz(CondIni_short[1]) == 1
+
+// Get the price of the last opened long or short
+last_open_longCondition := longCondition ? close : nz(last_open_longCondition[1])
+last_open_shortCondition := shortCondition ? close : nz(last_open_shortCondition[1])
+
+// Get the bar time of the last opened long or short
+last_longCondition := longCondition ? time : nz(last_longCondition[1])
+last_shortCondition := shortCondition ? time : nz(last_shortCondition[1])
+
+// In long/short conditions
+in_longCondition := last_longCondition > last_shortCondition
+in_shortCondition := last_shortCondition > last_longCondition
+
+// ================================================================================================================================================================================
+// PRICE AVERAGE / PYRAMIDING
+// ================================================================================================================================================================================
+
+// Pyramiding
+pyr := input(10, "MAX. PYRAMIDING 🎢" , minval = 1, maxval = 10)
+
+// Counting long & short iterations
+nLongs := nz(nLongs[1])
+nShorts := nz(nShorts[1])
+
+// Longs Counter
+if longCondition or (Final_Long_sl and not Act_sl)
+    nLongs := nLongs + 1
+    nShorts := 0
+    
+// Shorts Counter
+if shortCondition or (Final_Short_sl and not Act_sl)
+    nLongs := 0
+    nShorts := nShorts + 1
+
+// Quantity Factor
+QF_l = Quantity+(Increase*(nLongs-1))
+QF_s = Quantity+(Increase*(nShorts-1))
+
+// Price average of your position according to the quantities
+if longCondition
+    sum_long := nz(last_open_longCondition)*QF_l + nz(sum_long[1])
+    sum_short := 0.0
+    sum_qty_l := QF_l + nz(sum_qty_l[1])
+    sum_qty_s := na
+    
+if Final_Long_sl and not Act_sl
+    sum_long := ((1-(sl/100))*last_open_longCondition)*QF_l + nz(sum_long[1])
+    sum_short := 0.0
+    sum_qty_l := QF_l + nz(sum_qty_l[1])
+    sum_qty_s := na
+    
+if shortCondition
+    sum_short := nz(last_open_shortCondition)*QF_s + nz(sum_short[1])
+    sum_long := 0.0
+    sum_qty_s := QF_s + nz(sum_qty_s[1])
+    sum_qty_l := na
+    
+if Final_Short_sl and not Act_sl
+    sum_long := 0.0
+    sum_short := ((1+(sl/100))*last_open_shortCondition)*QF_s + nz(sum_short[1])
+    sum_qty_s := QF_s + nz(sum_qty_s[1])
+    sum_qty_l := na
+
+// Calculating and Plotting the price average
+Position_Price := nz(Position_Price[1])
+Position_Price := longCondition or (Final_Long_sl and not Act_sl) ? sum_long/(sum_qty_l) : shortCondition or (Final_Short_sl and not Act_sl) ? sum_short/(sum_qty_s) : na
+//plot(Position_Price[1], title = "Average Price", color = in_longCondition ? color.blue : color.red, linewidth = 2, style = plot.style_cross)
+
+// ================================================================================================================================================================================
+// STOP LOSS / RE-ENTRY
+// ================================================================================================================================================================================
+
+// SL initial inputs
+Act_sl := input(false, "ACTIVATE SL / DEACTIVATE RE-ENTRY")
+sl := input(10, "STOP LOSS / RE-ENTRY %", type = input.float, minval = 0, step = 0.5)
+
+// Initial SL conditions
+long_sl = crossunder(low, (1-(sl/100))*last_open_longCondition) and in_longCondition and not longCondition
+short_sl = crossover(high, (1+(sl/100))*last_open_shortCondition) and in_shortCondition and not shortCondition
+
+// Get the time of the last sl
+last_long_sl := long_sl ? time : nz(last_long_sl[1])
+last_short_sl := short_sl ? time : nz(last_short_sl[1])
+
+// Sl counter
+CondIni_long_sl := long_sl or XlongCondition ? 1 : longCondition ? -1 : nz(CondIni_long_sl[1])
+CondIni_short_sl := short_sl or XshortCondition ? 1 : shortCondition ? -1 : nz(CondIni_short_sl[1])
+
+// Final SL conditions
+Final_Long_sl := long_sl and nz(CondIni_long_sl[1]) == -1 and in_longCondition and not longCondition
+Final_Short_sl := short_sl and nz(CondIni_short_sl[1]) == -1 and in_shortCondition and not shortCondition
+
+// ================================================================================================================================================================================
+// TAKE PROFIT
+// ================================================================================================================================================================================
+
+// Take Profit input
+Act_tp = input(false, "ACTIVATE TAKE PROFIT")
+tp = input(5.0, "TAKE PROFIT %", type = input.float, minval = 0, step = 0.5)
+qty_TP = input(50, "QUANTITY TO CLOSE TP %", minval = 0, maxval = 100)
+
+// Initial TP conditions
+long_tp = crossover(high, (1+(tp/100))*fixnan(Position_Price)) and in_longCondition and not longCondition and not Final_Long_sl and Act_tp
+short_tp = crossunder(low, (1-(tp/100))*fixnan(Position_Price)) and in_shortCondition and not shortCondition and not Final_Short_sl and Act_tp
+
+// Get the time of the last tp
+last_long_tp := long_tp ? time : nz(last_long_tp[1])
+last_short_tp := short_tp ? time : nz(last_short_tp[1])
+
+// Tp signal ordering
+CondIni_long_tp := (Final_Long_sl and Act_sl) or XlongCondition ? 1 : longCondition ? -1 : nz(CondIni_long_tp[1])
+CondIni_short_tp := Final_Short_sl and Act_sl ? 1 : shortCondition ? -1 : nz(CondIni_short_tp[1])
+
+// Final tp condition
+Final_Long_tp = long_tp and last_longCondition > nz(last_long_tp[1]) and nz(CondIni_long_tp[1]) == -1
+Final_Short_tp = short_tp and last_shortCondition > nz(last_short_tp[1]) and nz(CondIni_short_tp[1]) == -1
+
+if Final_Long_tp or (Final_Long_sl and Act_sl) or XlongCondition
+    sum_long := 0.0
+    nLongs := na
+    CondIni_long_sl := 1
+    sum_qty_l := na
+    
+if Final_Short_tp or (Final_Short_sl and Act_sl) or XshortCondition
+    sum_short := 0.0
+    nShorts := na
+    CondIni_short_sl := 1
+    sum_qty_s := na
+
+// ================================================================================================================================================================================
+// BACKTEST
+// ================================================================================================================================================================================
+
+// Backtest inputs
+Act_BT = input(true, "BACKTEST 💹")
+contracts_or_cash = input("CASH", "CONTRACTS ₿ / CASH $", options = ["CONTRACTS","CASH"])
+cc_factor = (contracts_or_cash == "CASH") ? close : 1
+Quantity := input(1000, "$ QUANTITY 1ST ENTRY", minval = 0)/cc_factor
+Increase := input(500, "$ INCREASE NEXT ENTRY", minval = 0)/cc_factor
+
+// Backtest Period inputs
+testStartYear = input(2020, "BACKTEST START YEAR ⏲️", minval=2010, maxval=2222) 
+testStartMonth = input(01, "BACKTEST START MONTH", minval = 1, maxval = 12)
+testStartDay = input(01, "BACKTEST START DAY", minval = 1, maxval = 31)
+testPeriodStart = timestamp(testStartYear,testStartMonth,testStartDay,0,0)
+testStopYear = input(2222, "BACKTEST STOP YEAR", minval=1980, maxval = 2222)
+testStopMonth = input(12, "BACKTEST STOP MONTH", minval=1, maxval=12)
+testStopDay = input(31, "BACKTEST STOP DAY", minval=1, maxval=31)
+testPeriodStop = timestamp(testStopYear, testStopMonth, testStopDay, 0, 0)
+
+// Backtest Condition
+testPeriod = time >= testPeriodStart and time <= testPeriodStop ? true : false
+
+// Backtest entries
+if (Act_BT and testPeriod)
+    strategy.entry("Long", strategy.long, qty = QF_l, when = longCondition or (Final_Long_sl and not Act_sl))
+    strategy.close("Long", when = XlongCondition)
+    strategy.exit("TPl", "Long", qty_percent = qty_TP, limit = Act_tp ? (fixnan(Position_Price)*(1+(tp/100))) : na)
+    strategy.close("Long", when = Act_sl and Final_Long_sl)
+
+
+// ================================================================================================================================================================================
+// ALERTS
+// ================================================================================================================================================================================
+
+// LONGS
+
+alertcondition((longCondition[1] or (Final_Long_sl and not Act_sl)), title="All Longs Alert", 
+   message = "LONG")
+
+alertcondition(Final_Long_tp, title="TPL Alert",
+   message = "TPL")
+   
+alertcondition(XlongCondition[1] or (Final_Long_sl and Act_sl), title="Close Long / SL Alert", 
+   message = "XL/SLL")
+
+// SHORTS
+
+alertcondition((shortCondition[1] or (Final_Short_sl and not Act_sl)), title="All Shorts Alert", 
+   message = "SHORT")
+
+alertcondition(Final_Short_tp, title="TPS/SLS Alert", 
+   message = "TPS")
+
+alertcondition(XshortCondition[1] or (Final_Short_sl and Act_sl), title="Close Long / SL Alert", 
+   message = "XS/SLS")
+
